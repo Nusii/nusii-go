@@ -8,6 +8,8 @@ under the new version's heading (see RELEASING.md).
 
 ## Unreleased
 
+## 0.1.0 (2026-10-12)
+
 First release, covering the complete Nusii API v2:
 
 - Account, clients, proposals (including send and archive), sections (including
