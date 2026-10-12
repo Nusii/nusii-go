@@ -1,0 +1,72 @@
+# Publishes a release when a version tag is pushed. Create one with
+# `go run scripts/release.go patch|minor|major` and `git push --follow-tags`
+# (see RELEASING.md).
+#
+# Go has no package registry to upload to: the tag is the release. This
+# workflow checks the tag, creates the GitHub release with the changelog notes
+# and asks proxy.golang.org for the new version, so it shows up on
+# pkg.go.dev right away.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: Read the version
+        id: version
+        run: |
+          version="$(go run scripts/release.go version)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the Version constant $version in version.go"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # 1.2.0-beta.1 goes out as a prerelease.
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=--prerelease" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race ./...
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists, skipping."
+          else
+            go run scripts/release.go notes "$VERSION" > release-notes.md
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md --verify-tag $PRERELEASE
+          fi
+
+      - name: Announce the version to the Go module proxy
+        run: |
+          module="$(go list -m)"
+          cd "$RUNNER_TEMP"
+          GOPROXY=https://proxy.golang.org GOFLAGS=-mod=mod go list -m "$module@$GITHUB_REF_NAME"
